@@ -3,17 +3,17 @@
 This repository follows professional engineering standards for version control to ensure the history remains clean, searchable, and meaningful.
 
 ## 🪴 Knowledge Growth (Maturity Scale)
-Every note should include a **Frontmatter** block at the top to track its state:
+Every note should include a **Note Header** block at the top to track its state:
 
 1. **🌱 Seed**: Capture phase. Raw logs, error messages, or unformatted commands.
 2. **🌿 Sapling**: Organization phase. Added context, structured headers, and verified snippets.
 3. **🌳 Evergreen**: Authority phase. Polished, high-quality reference with "Best Practices."
 
-### Frontmatter Template
+### Note Header Template
 Use the following block at the top of every new Markdown file:
 
 **Status:** 🌱 Seed | 🌿 Sapling | 🌳 Evergreen  
-**Topic:** Technology Name  
+**Created:** YYYY-MM-DD  
 **Last Updated:** YYYY-MM-DD
 
 ## 🏗️ Version Control Standards
