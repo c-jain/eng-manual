@@ -1,6 +1,6 @@
-**Status:** 🌱 Seed  
+**Status:** 🌿 Sapling  
 **Created:** 2026-03-23  
-**Last Updated:** 2026-03-23
+**Last Updated:** 2026-03-24
 
 <br>
 
@@ -49,7 +49,21 @@ git pull origin main # or master
 
 Step 2: Go back inside project A, stage changes and commit.
 
+**Cloning a Project with Submodules**
 
+When some clone project A, by default, with `git clone` command, they will only get empty directories containing submodules.
+
+To populate the submodule directories, we must run two commands from the project A:
+
+1. `git submodule init`: it will initialize/populate local configuration file (`.git/config`) with the content of `.gitmodules` file.
+
+2. `git submodule update`: it will fetch all the data from project B and checkout the appropriate commit listed in project A.
+
+    **Note:** We can also use `git submodule update --remote` command to get the latest commit from project B. Don't forget to stage and commit these changes else others won't get updated version.
+
+**Note:** We can combine above two command into one `git submodule update --init` and to include nested submodules we can use `git submodule update --init --recursive` command.
+
+To make it simple we can use `git clone --recurse-submodules` command. It will initialize and update each submodules including nested submodules.
 
 ### 🔗 Initial Resources
 
