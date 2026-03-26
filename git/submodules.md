@@ -97,6 +97,6 @@ Removing a submodule is tricky as it exists in multiple places.
 
 **Step 5:** `git submodule status # should be empty` verify removal.
 
-### 🔗 Further reading
+## 🔗 Further reading
 
 - [Git Tools - Submodules](https://git-scm.com/book/en/v2/Git-Tools-Submodules)
