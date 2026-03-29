@@ -1,6 +1,6 @@
 **Status:** 🌳 Evergreen  
 **Created:** 2026-03-27  
-**Last Updated:** 2026-03-27
+**Last Updated:** 2026-03-30
 
 <br>
 
@@ -51,7 +51,7 @@ It can affect **working directory** (files on your disk), **staging area** (inde
 
 - `git reset --hard <commit>`: Moves HEAD back and destroys all changes in the staging area and working directory. Files are reverted to exactly how they were at the target commit.
 
-    **Use case**: You staged the wrong files, or you want to re-organize what goes into the next commit.
+    **Use case**: You want to completely throw away your work and start fresh from a known state.
 
 
     ```bash
