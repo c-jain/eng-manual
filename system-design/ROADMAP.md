@@ -35,7 +35,7 @@ Think: distributed systems, scalability, availability, reliability.
 | # | Topic | File |
 |---|-------|------|
 | 8 | Horizontal vs Vertical Scaling | `hld/scaling.md` |
-| 9 | Load Balancing — algorithms, L4 vs L7, consistent hashing | `hld/load-balancing.md` |
+| 9 | Load Balancing — algorithms, L4 vs L7 | `hld/load-balancing.md` |
 | 10 | Caching — strategies (write-through, write-back, write-around), eviction policies (LRU, LFU), CDN | `hld/caching.md` |
 | 11 | Content Delivery Networks (CDN) | `hld/cdn.md` |
 | 12 | Database Scaling — replication, sharding, partitioning | `hld/database-scaling.md` |
