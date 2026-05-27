@@ -79,16 +79,20 @@ Scenario 2: After adding E between A and B
 
 **Removing a node B:**
 
-B's keys walk clockwise to C (B's successor). Only B's arc is affected.
+Keys owned by B are those in the A→B arc — they walk clockwise and hit B first. When B is removed, those keys continue clockwise and land on C. C's responsibility expands to cover the full A→C arc.
 
 ```
-Scenario 1: B exists — B→C arc shows k3, k4 on B
+Scenario 1: B exists
+  A→B arc: k1, k2 owned by B
+  B→C arc: k3, k4 owned by C
 
-  [A] --- [B] ---k3---k4--- [C]
+  [A] ---k1---k2--- [B] ---k3---k4--- [C]
 
-Scenario 2: B removed — k3, k4 fall to C
+Scenario 2: B removed
+  k1, k2 walk clockwise past where B was → now owned by C
+  k3, k4 were already owned by C → unchanged
 
-  [A] --------k3---k4--- [C]
+  [A] ---k1---k2---k3---k4--- [C]
 ```
 
 In both cases, every other key on the ring is completely undisturbed.
