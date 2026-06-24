@@ -1,3 +1,9 @@
+---
+Status: 🌳 Evergreen
+Created: 2026-05-19
+Last Updated: 2026-06-24
+---
+
 # Caching
 
 ## Table of Contents
@@ -52,16 +58,48 @@ Write strategies answer: **when a write comes in, what do we write to, and in wh
 Client
   │
   ▼
-Cache ──── (synchronous write) ────► DB
-  │
-  │  ACK only after DB confirms
-  ▼
-Client gets response
+  DB ──── (success) ────► Cache ──── (success) ────► ACK client
+  │                           │
+  └── fails: return error     └── fails: delete cache key, return error
+      (cache untouched)           (next read repopulates from DB)
 ```
 
-**What it does:** Every write is sent to both the cache and the DB, synchronously. The client receives an acknowledgement only after both succeed.
+**What it does:** Every write goes to the DB first, then updates the cache. The client receives an acknowledgement only after both succeed. The order is DB → cache, not cache → DB.
 
-**Why it exists:** Guarantees the cache and DB are always in sync. There is no dirty data in the cache. Simple to reason about.
+**Why DB first?** The DB is the source of truth; the cache is a derived copy. If the cache were written first, reads during the window between the cache write and the DB write would observe data that was never durably committed — a correctness violation. A missing cache entry causes a temporary performance issue (one extra DB read); a stale cache entry causes a correctness bug. Correctness always wins.
+
+**Implementation:**
+
+```go
+func UpdateUser(user User) error {
+    // Step 1: write to the durable source of truth first.
+    if err := db.Update(user); err != nil {
+        return err // cache is untouched; state is consistent
+    }
+
+    // Step 2: update the cache.
+    if err := cache.Set(user.ID, user); err != nil {
+        // Do not return the stale entry — delete it so the next read
+        // falls through to the DB and repopulates the cache correctly.
+        cache.Delete(user.ID)
+        return err
+    }
+
+    return nil
+}
+```
+
+**Failure scenarios:**
+
+| Scenario | State After | Handling |
+|---|---|---|
+| DB write fails | DB = old, cache = old | Return error. Nothing to undo. Clean. |
+| DB succeeds, cache update fails | DB = new, cache = stale | Delete cache key. Next read repopulates from DB. Return error. |
+| Cache delete also fails | DB = new, cache = stale | Log critical alert. Push to retry queue. Background repair worker reconciles. |
+| App crashes between DB commit and cache update | DB = new, cache = stale | TTL expiry eventually restores consistency. For stronger guarantees, use the transactional outbox pattern — write an outbox event atomically with the DB commit; a background worker updates the cache from the outbox. |
+| Concurrent writes arrive out of order | DB = v2, cache = v1 | Store a version number or `updated_at` timestamp alongside cached values. Cache only accepts writes with a newer version than what it currently holds. |
+
+**Why it exists:** Guarantees the cache and DB are always in sync for reads. There is no dirty data in the cache. Simple to reason about under normal operation.
 
 **Problems it brings:**
 - Write latency is DB-bound — the cache offers no write performance benefit
@@ -69,8 +107,6 @@ Client gets response
 - If the DB is slow, every write is slow regardless of the cache
 
 **Good for:** Read-heavy workloads where read consistency matters — user profiles, product catalogues, permission tables.
-
-**NOTE:** In Write-Through, writes synchronously propagate through the cache layer to the database, but internally the system usually commits to the DB first and then updates/invalidate the cache before acknowledging the client.
 
 ### Write-Back (Write-Behind)
 
@@ -80,19 +116,121 @@ Client
   ▼
 Cache ──── ACK immediately to client
   │
-  │  (async flush, on timer or eviction)
+  │  (async flush — on timer, eviction, or batch threshold)
   ▼
   DB
 ```
 
 **What it does:** Writes go to the cache only. The client gets an immediate ACK. The cache flushes dirty entries to the DB asynchronously — on eviction, on a timer, or in batches.
 
-**Why it exists:** Dramatically improves write throughput. Absorbs write bursts. Useful when many overwrites happen to the same key before it ever needs to be persisted (e.g., a counter incremented 100 times per second).
+Write-back is the **one strategy where cache-first is correct by design** — the cache is the primary write target. The DB is a deferred, async destination.
+
+**Why it exists:** Dramatically improves write throughput. Absorbs write bursts. Useful when many overwrites happen to the same key before it ever needs to be persisted (e.g., a counter incremented 100 times per second — only the final value needs to reach the DB).
+
+**Implementation:**
+
+```go
+func UpdateUser(user User) error {
+    // Write to cache only; mark entry dirty. Client is ACKed here.
+    if err := cache.Set(user.ID, user, MarkDirty); err != nil {
+        return err // cache write failed; nothing inconsistent
+    }
+    return nil
+    // No db.Update() call — flusher handles this asynchronously.
+}
+
+// FlushDirtyEntries runs in background — on timer, eviction, or size threshold.
+func FlushDirtyEntries() {
+    for _, entry := range cache.DirtyEntries() {
+        if err := db.Update(entry); err != nil {
+            retryQueue.Push(entry) // do not drop; retry with backoff
+            continue
+        }
+        cache.ClearDirty(entry.ID) // mark clean ONLY after DB confirms
+    }
+}
+```
+
+**Failure scenarios:**
+
+| Scenario | State After | Handling |
+|---|---|---|
+| Cache write fails | Cache = old, DB = old | Return error. Nothing inconsistent. |
+| Async flush to DB fails | Cache = new (dirty), DB = old | Push to retry queue. Retry with backoff. Alert if retry budget exhausted. |
+| Cache node crashes before flush | Cache = gone, DB = old | **Data permanently lost** — the fundamental durability trade-off of write-back. Mitigate with cache persistence (Redis AOF/RDB) or a write-ahead log. |
+| Partial flush — some keys flushed, some not | Cache = mixed dirty/clean, DB = partial | Per-entry dirty flag ensures only unflushed entries are retried. |
+| Concurrent writes to same key, flush out of order | DB = older value overwrites newer | Clear dirty flag only after DB confirms. Use per-key versioned writes so an older flush cannot overwrite a newer DB state. |
+| DB permanently unavailable | Dirty entries accumulate indefinitely | Cap dirty set size. Once full, reject new writes or fall back to write-through. Alert immediately. |
+
+**Critical discipline:** mark an entry dirty on cache write; clear it dirty **only after** the DB flush succeeds. Clearing before confirmation means a subsequent crash silently loses the entry with no retry.
+
+**Flush Trigger Mechanisms**
+
+The three triggers mentioned above are complementary — all three run simultaneously in a real system:
+
+*On a timer* — a background goroutine wakes on a fixed interval and flushes all dirty entries. Not an OS cron job; an in-process ticker is standard (lower overhead, no external dependency, interval is seconds not minutes).
+
+```go
+func StartFlusher(interval time.Duration) {
+    go func() {
+        ticker := time.NewTicker(interval)
+        defer ticker.Stop()
+        for range ticker.C {
+            FlushDirtyEntries()
+        }
+    }()
+}
+```
+
+*On eviction* — most cache libraries expose an eviction callback that fires whenever a key is removed (by LRU pressure, TTL expiry, or explicit delete). The callback flushes the dirty entry before it disappears. Critical: once evicted, the entry is gone from the cache — if the DB write inside the callback fails, it must be pushed to a retry queue immediately; it will not be available for the next timer tick.
+
+```go
+cache := lru.NewWithEvict(capacity, func(key, value any) {
+    entry := value.(CacheEntry)
+    if entry.IsDirty {
+        if err := db.Update(entry); err != nil {
+            retryQueue.Push(entry) // evicted — must not lose it
+        }
+    }
+})
+```
+
+Go libraries supporting eviction callbacks: `hashicorp/golang-lru` (`NewWithEvict`), `dgraph-io/ristretto`, `bluele/gcache`.
+
+*On size threshold* — every `Set` checks whether the dirty entry count has crossed a configured limit. If yes, it triggers an immediate flush without waiting for the timer. Prevents a write burst from accumulating thousands of dirty entries that all hit the DB at once when the timer fires (a self-inflicted thundering herd).
+
+```go
+func (c *WriteBackCache) Set(key string, entry CacheEntry) error {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    entry.IsDirty = true
+    c.store[key] = entry
+    c.dirtyKeys = append(c.dirtyKeys, key)
+
+    if len(c.dirtyKeys) >= c.dirtyThreshold {
+        go c.FlushDirtyEntries() // async so Set() returns immediately
+    }
+    return nil
+}
+```
+
+How all three interact:
+
+```
+Write hits cache → dirty count crosses threshold? → YES → immediate batch flush
+                                                  → NO  → wait
+Timer fires (every N seconds) ──────────────────────────► flush all dirty entries
+Entry evicted by LRU / TTL ─────────────────────────────► flush that entry now
+                                                           or push to retry queue
+```
+
+The timer is the safety net ensuring nothing sits dirty indefinitely. The threshold caps the dirty set size. The eviction callback is the last line of defence before an entry leaves the cache entirely.
 
 **Problems it brings:**
 - **Durability risk:** if the cache node crashes before flushing, writes are lost permanently
-- Complex recovery logic — you need to track which entries are "dirty" (not yet flushed)
-- "Eventually" consistent with the DB, but the lag is hard to bound
+- Complex recovery logic — must track which entries are dirty and unflushed
+- DB lag is hard to bound — "eventually consistent" with an unbounded window
 
 **Good for:** High write throughput scenarios — gaming leaderboards, analytics counters, shopping cart updates — where losing a few seconds of writes is acceptable.
 
@@ -101,20 +239,61 @@ Cache ──── ACK immediately to client
 ```
 Client
   │
-  ├──────────────► DB  (all writes go directly to DB)
+  ├──────────────────────────────► DB (all writes go here directly)
+  │                                    │
+  │                               success / fail
   │
-  └──── Cache is untouched on writes
-              │
-              │ (cache is only populated on cache-miss reads)
-              ▼
+  └── Cache is never touched on writes.
+      Populated only on subsequent read misses.
 ```
 
-**What it does:** Writes bypass the cache entirely and go straight to the DB. The cache is only populated lazily, on a cache miss during a subsequent read.
+**What it does:** Writes bypass the cache entirely and go straight to the DB. The cache is only populated lazily on a cache miss during a subsequent read.
 
 **Why it exists:** Avoids polluting the cache with write-once/read-never data. Example: bulk log ingestion — you write millions of log lines that may never be queried. Putting them in cache evicts actually-hot data.
 
+Write-around has the simplest failure surface of the three strategies — the cache is never involved in the write path.
+
+**Implementation:**
+
+```go
+func UpdateUser(user User) error {
+    // Write directly to DB. Cache is not touched — intentional.
+    if err := db.Update(user); err != nil {
+        return err
+    }
+    // Optional: evict stale entry so the next read gets fresh data
+    // rather than serving the old cached value until TTL expires.
+    cache.Delete(user.ID) // failure here is non-fatal; TTL handles it anyway
+    return nil
+}
+
+func GetUser(id string) (User, error) {
+    // Standard read-through layered on top of write-around.
+    if user, ok := cache.Get(id); ok {
+        return user, nil // cache hit
+    }
+    // Cache miss — fetch from DB and populate cache for future reads.
+    user, err := db.Get(id)
+    if err != nil {
+        return User{}, err
+    }
+    cache.Set(id, user) // non-fatal if this fails; next read retries
+    return user, nil
+}
+```
+
+**Failure scenarios:**
+
+| Scenario | State After | Handling |
+|---|---|---|
+| DB write fails | DB = old, cache = old | Return error. Nothing inconsistent. Simplest case. |
+| DB write succeeds | DB = new, cache = old or absent | Intentional. First subsequent read is a cache miss → DB fetch → cache populate. |
+| Cache population on read fails | DB = new, cache = absent | Non-fatal. Next read retries. DB is always correct. |
+| Concurrent read during write window | Reader may get old cached value | Acceptable — write-around makes no consistency promise on cache during writes. If unacceptable for a specific key, explicitly `cache.Delete(key)` after the DB write (see implementation above). |
+| Repeated reads of recently written data | All misses until cache warms | Expected cost of keeping the cache clean. Mitigate by explicitly populating the cache after a write if immediate re-reads are anticipated. |
+
 **Problems it brings:**
-- The first read after a write is always a cache miss — you always hit the DB at least once for freshly written data
+- The first read after a write is always a cache miss — you pay DB latency at least once for freshly written data
 - Higher read latency for recently written data during the cold period
 
 **Good for:** Workloads where you write large amounts of data that won't be immediately re-read — video uploads, bulk imports, log pipelines.
