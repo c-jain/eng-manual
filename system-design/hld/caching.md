@@ -14,6 +14,9 @@ Last Updated: 2026-06-24
   - [Write-Back (Write-Behind)](#write-back-write-behind)
   - [Write-Around](#write-around)
   - [Strategy Comparison](#strategy-comparison)
+- [Read Strategies](#read-strategies)
+  - [Cache-Aside (Lazy Loading)](#cache-aside-lazy-loading)
+  - [Read-Through](#read-through)
 - [Eviction Policies](#eviction-policies)
   - [LRU — Least Recently Used](#lru--least-recently-used)
   - [LFU — Least Frequently Used](#lfu--least-frequently-used)
@@ -310,6 +313,117 @@ func GetUser(id string) (User, error) {
 | Best for | Read-heavy, consistency matters | Write-heavy, some loss OK | Write-once, rarely re-read data |
 
 
+## Read Strategies
+
+The write strategies (write-through, write-back, write-around) answer the write path. Read strategies answer the read path: **how does data get into the cache, and who is responsible for it?**
+
+There are two read strategies worth knowing. They are not alternatives to the write strategies — a system uses one read strategy and one write strategy together.
+
+### Cache-Aside (Lazy Loading)
+
+**What it is:** The application code manually handles all three steps on every read: check cache → on a miss, fetch from DB → write the result into cache. The application is fully in control of when and what gets cached.
+
+**Why it's called "cache-aside":** The cache sits *beside* the application-to-DB path rather than *in* it. The application makes two separate calls — one to the cache, one to the DB on a miss — rather than all reads being intercepted by a single proxy. The alternative name, **lazy loading**, captures the timing: data enters the cache only on the first actual request, not proactively.
+
+**Why it exists:** The cache only ever holds data that has genuinely been requested. Nothing is pre-populated speculatively. This avoids cache pollution and gives the application full control over TTL and key structure per entry.
+
+### How It Works — Step By Step
+
+```
+Read request arrives
+        │
+        ▼
+  Check cache
+        │
+   ┌────┴────┐
+   │         │
+  HIT       MISS
+   │         │
+   │         ▼
+   │    Fetch from DB
+   │         │
+   │         ▼
+   │    Write to cache (with TTL)
+   │         │
+   └────┬────┘
+        │
+        ▼
+  Return value to client
+```
+
+```go
+// GetUser demonstrates the cache-aside read pattern.
+// The application explicitly handles all three steps.
+func GetUser(id string) (User, error) {
+    // Step 1: check cache.
+    if user, ok := cache.Get(id); ok {
+        return user, nil // cache hit — return immediately
+    }
+
+    // Step 2: cache miss — fetch from the source of truth.
+    user, err := db.Get(id)
+    if err != nil {
+        return User{}, err
+    }
+
+    // Step 3: populate cache for future reads.
+    // TTL prevents stale data from sitting indefinitely.
+    cache.Set(id, user, ttl)
+
+    return user, nil
+}
+```
+
+### Problems It Brings
+
+**Cold start penalty.** The first request for any key always misses and pays full DB latency. A cache restart or flush resets every key to cold, causing a latency spike until the working set warms again.
+
+**Thundering herd (cache stampede).** When a popular key expires, many concurrent requests all miss simultaneously and race to the DB to reload it. This is the most common operational problem with cache-aside. See the Common Problems section for solutions.
+
+**Stale reads.** If the DB is updated by an external process — a migration, a direct SQL update, a different service — the cache has no way to know and keeps serving the old value until TTL expires. The application must explicitly call `cache.Delete(key)` after any write it controls; external writes are always a staleness risk.
+
+### Pairing Cache-Aside With Write Strategies
+
+Cache-aside is a read strategy and is independent of the write strategy. The write strategy you pair it with determines the staleness risk on reads:
+
+| Write Strategy Paired | Effect On Cache-Aside Reads |
+|---|---|
+| Write-Through | Low stale risk — cache is updated synchronously on every write |
+| Write-Back | Low stale risk for in-flight data — cache has the latest write; risk only on crash before flush |
+| Write-Around | Highest stale risk — writes bypass the cache entirely; stale until TTL expires or explicit `cache.Delete` |
+
+**The most common real-world combination:** cache-aside (reads) + write-around (writes) + explicit `cache.Delete` after each write. Reads are lazy; writes go directly to the DB; the delete keeps staleness bounded by preventing a stale entry from surviving until TTL. This is the pattern used in most system design case studies (Twitter timelines, Facebook TAO, Amazon product pages).
+
+---
+
+### Read-Through
+
+**What it is:** The cache acts as a transparent proxy between the application and the DB. The application only ever calls `cache.Get(key)`. On a miss, the cache itself fetches from the DB, populates itself, and returns the result — the application never writes DB-fetch logic.
+
+```
+Cache-Aside — app does all three steps:    Read-Through — app does one step:
+
+  app → cache.Get()                          app → cache.Get()
+  app → db.Get()       (on miss)                      ↓ (on miss, internal to cache)
+  app → cache.Set()                              cache → db.Get()
+                                                 cache → cache.Set()
+                                                 cache → return to app
+```
+
+**Why it exists:** Simplifies application code — no miss-handling logic scattered across the codebase. The caching behaviour is centralised in one place (the cache client or middleware).
+
+**Problems it brings:**
+- The cache client or library must know how to fetch from the DB — this couples them, which can be awkward if the DB access pattern is complex
+- Less flexible: the application cannot easily customise TTL or key structure per entry
+- Same cold start and thundering herd risks as cache-aside
+
+**When to prefer read-through over cache-aside:**
+- When simplicity matters more than flexibility — one fewer step for the application to manage
+- When using a cache library or proxy (e.g., AWS DAX for DynamoDB, read-through Redis clients) that natively supports it
+
+**Refresh-Ahead (brief mention):** A third read strategy where the cache proactively refreshes entries *before* they expire, based on predicted access patterns. Eliminates cold start for known-hot keys but wastes resources if predictions are wrong. Rarely discussed in interviews but worth knowing the name.
+
+
 ## Eviction Policies
 
 When the cache is full and a new entry must be stored, something must be evicted. Eviction policies answer: **what do we throw out?**
@@ -515,6 +629,10 @@ A single cache key receives a disproportionate number of requests (e.g., a viral
 - "User profile reads" → write-through (consistency on reads, writes are infrequent)
 - "Leaderboard / counter" → write-back (high write throughput, some loss OK)
 - "Log ingestion / bulk import" → write-around (don't pollute cache with write-once data)
+
+**Read strategy signals:**
+- "Most common pattern", "case study", "Twitter / Facebook / Amazon" → cache-aside (lazy loading); pair with write-around + explicit `cache.Delete` on write
+- "Strong consistency after every write" → write-through (cache always synchronised, no stale reads)
 
 **Eviction policy signals:**
 - "General purpose, session data" → LRU (temporal locality)
