@@ -1,17 +1,23 @@
-# Client-Server model, IP, DNS, HTTP/HTTPS
+---
+Status: 🌳 Evergreen
+Created: 2026-04-13
+Last Updated: 2026-06-26
+---
+
+# Client-Server Model, IP, DNS, HTTP/HTTPS
 
 ## Table of Contents
 
-- [Client-Server model](#Client-Server-model)
-- [IP Addressing](#IP-Addressing)
+- [Client-Server Model](#client-server-model)
+- [IP Addressing](#ip-addressing)
 - [DNS](#dns)
 - [HTTP and HTTPS](#http-and-https)
-- [Interview cheat sheet](#Interview-cheat-sheet)
-- [References](#References)
+- [Interview Cheat Sheet](#interview-cheat-sheet)
+- [References](#references)
 
 ---
 
-## Client-Server model
+## Client-Server Model
 
 The client-server model is an architectural pattern where two parties communicate over a network: one **requests** resources or services (the client), and the other **provides** them (the server).
 
@@ -34,7 +40,7 @@ The model is asymmetric: clients start conversations; servers respond to them. A
 - **three-tier architecture** — client talks to an application server, which in turn talks to a database server. Responsibilities are cleanly separated across layers.
 - **microservices** — multiple backend services communicate with each other as both clients and servers. A single user request may chain through many services.
 
-### Stateless vs Stateful servers
+### Stateless vs Stateful Servers
 
 HTTP is stateless by design: the server holds no memory of previous requests. This is why session state must live somewhere explicit:
 
@@ -44,7 +50,7 @@ HTTP is stateless by design: the server holds no memory of previous requests. Th
 
 Stateless servers are horizontally scalable with no coordination. Stateful servers require sticky sessions or shared state — a design constraint that comes up constantly in scaling interviews.
 
-### request-response cycle
+### Request-Response Cycle
 
 ```
 Client                          Server
@@ -98,7 +104,7 @@ An IP address identifies a machine. A **port** identifies a specific process or 
   - `53` → DNS
 - **Ephemeral ports (49152–65535)** are assigned temporarily by the OS to client-side connections
 
-### CIDR notation (Classless Inter-Domain Routing)
+### CIDR Notation (Classless Inter-Domain Routing)
 
 `10.0.0.0/24` — the `/24` means the first 24 bits are the **network prefix**. The remaining 8 bits identify hosts: `2^8 = 256` addresses (`.0` to `.255`; `.0` is the network address, `.255` is broadcast — 254 usable).
 
@@ -110,7 +116,7 @@ An IP address identifies a machine. A **port** identifies a specific process or 
 
 CIDR notation appears everywhere in VPC subnet design. A `/16` VPC broken into `/24` subnets gives you 256 subnets of 254 hosts each.
 
-### Public vs Private addresses (RFC 1918)
+### Public vs Private Addresses (RFC 1918)
 
 Private ranges (not routable on the public internet):
 
@@ -190,7 +196,7 @@ Browser                Recursive Resolver         Root NS         TLD NS (.com) 
 4. **TLD nameservers** — responsible for `.com`, `.org`, etc. Know who is authoritative for `github.com`.
 5. **authoritative nameserver** — the final authority. Returns the actual IP.
 
-### DNS record types
+### DNS Record Types
 
 | Record | Maps | Notes |
 |--------|------|-------|
@@ -204,12 +210,12 @@ Browser                Recursive Resolver         Root NS         TLD NS (.com) 
 | `PTR` | IP → hostname | Reverse DNS |
 | `SRV` | service → host + port | Used by service discovery (Kubernetes, etcd) |
 
-### TTL trade-offs
+### TTL Trade-offs
 
 - **Low TTL (30–300s):** Changes propagate fast. More DNS queries = more load on resolvers and latency per lookup. Use when you're about to do a migration or failover.
 - **High TTL (3600–86400s):** Fewer queries, less latency. Stale on IP changes. Lower TTL well in advance (24–48h) before any planned IP change.
 
-### CNAME vs A at the apex
+### CNAME vs A at the Apex
 
 You cannot set a `CNAME` for `example.com` (the zone apex) because an apex must also have an `SOA` and `NS` record — and a `CNAME` would conflict (RFC 1034). Subdomains (`api.example.com`) can be `CNAME`s.
 
@@ -217,7 +223,7 @@ Workarounds:
 - **Flatten to A** — the DNS provider (Cloudflare, Route 53) resolves the CNAME target at query time and returns the A record. Called `ALIAS` or `ANAME`.
 - **Use a redirect** — redirect `example.com` → `www.example.com`.
 
-### DNS-based load balancing
+### DNS-Based Load Balancing
 
 DNS can return multiple A records (round-robin). Clients pick one, usually the first. This is coarse-grained — DNS has no knowledge of server health or load. Real load balancing requires a load balancer, not DNS alone.
 
@@ -234,7 +240,7 @@ Route 53 weighted routing, latency-based routing, and health-checked failover ar
 
 ## HTTP and HTTPS
 
-### HTTP versions
+### HTTP Versions
 
 **HTTP (HyperText Transfer Protocol)** is the application-layer protocol that governs how clients and servers exchange data on the web. It is stateless — each request is independent; the server holds no memory of previous requests by default.
 
@@ -307,6 +313,11 @@ HTTP/3    — runs over QUIC (UDP). Eliminates TCP HoL blocking. Faster connecti
     404 Not Found         — resource does not exist
     405 Method Not Allowed
     409 Conflict          — state conflict (e.g. duplicate create)
+    410 Gone              — resource existed but is permanently removed and will not return.
+                            Unlike 404 (ambiguous: never existed, moved, or may appear later),
+                            410 is a definitive statement the server knows it is gone for good.
+                            Crawlers and clients should drop cached refs and stop requesting.
+                            Use for: expired short URLs, deleted content, decommissioned endpoints.
     422 Unprocessable     — syntactically valid but semantically wrong
     429 Too Many Requests — rate limited. Include Retry-After header.
 
@@ -319,7 +330,7 @@ HTTP/3    — runs over QUIC (UDP). Eliminates TCP HoL blocking. Faster connecti
 
 **Interview trap:** 401 vs 403. `401` means the client is not authenticated — send credentials or log in. `403` means the client is authenticated but lacks permission.
 
-### key headers
+### Key Headers
 
 ```
 Request headers:
@@ -407,7 +418,7 @@ Tells the browser to always use HTTPS for this domain, even if the user types `h
 
 A TLS extension that lets a server host multiple certificates on the same IP, since the hostname is sent unencrypted during the handshake.
 
-### Cookies and security headers
+### Cookies and Security Headers
 
 ```go
 // Setting a secure cookie in Go
@@ -429,7 +440,7 @@ http.SetCookie(w, &http.Cookie{
 
 ---
 
-## Interview cheat sheet
+## Interview Cheat Sheet
 
 **"Design a URL shortener"** — DNS, HTTP redirects (301 vs 302 — 301 is cached by browsers, 302 lets you track clicks), distributed ID generation.
 
