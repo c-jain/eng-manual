@@ -1,7 +1,7 @@
 ---
 Status: 🌳 Evergreen
-Created: 2026-06-26
-Last Updated: 2026-06-26
+Created: 2026-06-21
+Last Updated: 2026-07-02
 ---
 
 # URL Shortener (TinyURL)
@@ -19,11 +19,12 @@ Last Updated: 2026-06-26
 9. [Step 4 — Deep Dive: Caching, Expiration, And Abuse Prevention](#step-4--deep-dive-caching-expiration-and-abuse-prevention)
 10. [Step 5 — Trade-Offs](#step-5--trade-offs)
 11. [Step 6 — Wrap-Up](#step-6--wrap-up)
-12. [Problems This Design Brings](#problems-this-design-brings)
-13. [How To Remember This](#how-to-remember-this)
-14. [What Interviewers Actually Look For](#what-interviewers-actually-look-for)
-15. [Interview Cheat Sheet](#interview-cheat-sheet)
-16. [References](#references)
+12. [Edge Cases And Extensions](#edge-cases-and-extensions)
+13. [Problems This Design Brings](#problems-this-design-brings)
+14. [How To Remember This](#how-to-remember-this)
+15. [What Interviewers Actually Look For](#what-interviewers-actually-look-for)
+16. [Interview Cheat Sheet](#interview-cheat-sheet)
+17. [References](#references)
 
 ## What It Is And Why It Exists
 
@@ -234,7 +235,7 @@ func Decode(code string) (uint64, error) {
 }
 ```
 
-This snippet was compiled and tested (`go vet` + `go test`, including a round-trip property test across known values and the 62⁶/62⁷ boundary computed above) — all passing.
+Worth testing here: a round-trip property test across known values, and specifically the 62⁶/62⁷ boundary computed above — confirming the capacity math actually holds at the edge, not just in the middle of the range.
 
 **Dry run — `Encode(125)`:**
 
@@ -434,6 +435,41 @@ Click 2: Browser --request--> App Server --302, Location--> Browser navigates (n
 ## Step 6 — Wrap-Up
 
 We designed a URL shortener using a range-allocated counter for collision-free short code generation, a key-value store optimized for single-key redirect lookups, a cache absorbing the 100:1 read-heavy traffic, and asynchronous click tracking that keeps analytics off the hot path. The biggest production risk is a single short code going viral and creating a hot-key read spike even through the cache — I'd address that with edge/CDN caching for the most-requested redirects. Given more time, I'd add URL safety scanning on creation, multi-region replication for global latency, and a self-serve analytics dashboard.
+
+## Edge Cases And Extensions
+
+Every item named as out of scope in Step 1 gets a concrete answer here — "out of scope" should mean "deferred," not "no plan."
+
+**User accounts:** the current design treats every URL as anonymous. Adding accounts needs a `users` table and a nullable `user_id` foreign key on `urls`, plus a standard session/JWT auth layer in front of the API. This unlocks a "my links" list (query `urls` by `user_id`) and lets rate limiting switch from per-IP to per-user, which is harder to spoof. One design choice worth naming explicitly: whether custom aliases stay globally unique across all users, or become namespaced per-user (`short.ly/alice/promo` vs a flat global `short.ly/promo`) — the current schema assumes global uniqueness, and switching to per-user namespacing would change the uniqueness constraint on `custom_alias` from a single-column unique index to a composite `(user_id, custom_alias)` index.
+
+**Full analytics dashboard:** the design already writes every click asynchronously to a `clicks` store — see Step 4 (Database And Storage) — specifically so a dashboard is a downstream read problem, not a redesign. A periodic aggregation job rolls up raw click events into an `analytics_summary` table (clicks per short_code per hour, top referrers, geo breakdown); the dashboard's read API queries only the summary table, never the raw event firehose. Same "async, off the hot path" principle already used for click tracking itself, applied one layer further downstream.
+
+**Malware/phishing URL scanning:** covered briefly under Abuse Prevention above. Unlike user accounts and the analytics dashboard, this is a small pluggable interface an interviewer could reasonably ask to see written out — HLD interviewers rarely want a full auth system in Go, but a one-method safety check is fair game.
+
+```go
+// URLSafetyChecker abstracts screening a destination URL against a
+// malware/phishing blocklist before a short code is issued for it.
+// Injected as an interface so the real provider (Google Safe Browsing,
+// an internal blocklist, etc.) can change without touching the handler.
+type URLSafetyChecker interface {
+    IsSafe(longURL string) (bool, error)
+}
+
+// ShortenRequest is what the shorten handler checks before ever touching
+// the counter or the database — reject early, spend nothing.
+func ShortenRequest(checker URLSafetyChecker, longURL string) error {
+    safe, err := checker.IsSafe(longURL)
+    if err != nil {
+        return fmt.Errorf("safety check: %w", err)
+    }
+    if !safe {
+        return fmt.Errorf("url rejected: flagged as unsafe")
+    }
+    return nil
+}
+```
+
+Worth testing here: a rejection case against a mock blocklist, and a pass-through case for a URL not on it. This runs synchronously at submission time, before a short code is even issued — affordable because it sits on the low-QPS write path (~10 QPS from Step 2), not the high-QPS redirect read path. The same reasoning that keeps click tracking off the read path applies here in reverse: expensive checks belong wherever the traffic is lightest.
 
 ## Problems This Design Brings
 
