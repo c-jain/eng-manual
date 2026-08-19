@@ -51,6 +51,18 @@ Every note follows a consistent shape — match it when adding or editing files:
 
 5. **HLD case studies** (`hld/design-*.md`) and **LLD case studies** (`lld/design-*.md`) follow an interview-framework structure: Requirements → Estimation → High-Level Design → Deep Dives → Trade-offs (see `hld/design-rate-limiter.md` or `hld/interview-framework.md` for the canonical shape).
 
+6. **Callouts** use GitHub alert syntax rather than plain blockquotes or ad-hoc labels:
+ 
+   ```
+   > [!NOTE]       supporting context, vocabulary, small clarifications
+   > [!TIP]        mnemonic, "how to remember," interview signal
+   > [!IMPORTANT]  a decision or constraint the reader must not skip
+   > [!WARNING]    a common mistake or trap
+   > [!CAUTION]    something that will actively break things (rare in notes)
+   ```
+ 
+   These render as coloured callout boxes on github.com; plain `>` blockquotes render as grey quotes. Use callouts sparingly — a note file with more than 3–4 callouts is a signal the content should be inline prose instead. Do NOT retrofit older files; convention applies from adoption date (2026-08-19) forward. Plain `>` blockquotes are still fine for inline glossary definitions attached to a diagram or code block.
+
 ## Commit conventions
 
 Follow Conventional Commits: `<type>(<scope>): <subject>`, imperative mood, one topic per commit.
