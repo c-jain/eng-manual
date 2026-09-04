@@ -1,7 +1,7 @@
 ---
 Status: 🌳 Evergreen
 Created: 2026-09-03
-Last Updated: 2026-09-03
+Last Updated: 2026-09-04
 ---
 
 # Prefix Sum
@@ -605,6 +605,8 @@ func findMaxLength(nums []int) int {
 ```
 
 Two key differences from the count variant: the map stores the *earliest* index (not a count, since we want the longest), and the seed value is `-1` (the position "just before" index 0), so that a subarray starting at index 0 with sum zero has width `i - (-1) = i + 1`.
+
+**Why the width is `i - l` and not `i - l + 1`.** `firstSeen[running] = l` records the *right end* of the earlier prefix at that value, not a fresh starting point. `l` is already baked into the earlier prefix. For the two prefixes to match now, the elements between them must sum to zero, and those elements are `a[l+1], a[l+2], ..., a[i]` (index `l` itself is excluded). Count of elements: `i - (l+1) + 1 = i - l`. The `l = -1` seed then makes "subarray starting at index 0" fall out naturally: `i - (-1) = i + 1`, which is the count of elements from index 0 through index `i`.
 </details>
 
 ### 4. Subarray Sums Divisible By K — [#974 (Medium)](https://leetcode.com/problems/subarray-sums-divisible-by-k/)
@@ -824,7 +826,7 @@ func shortestSubarray(nums []int, k int) int {
 }
 ```
 
-The `r <= n` loop bound (not `< n`) is intentional: `prefix` has length `n+1` and every prefix index up to `n` is a valid left endpoint for some window. The double-ended manipulation (front consume, back evict) is what the monotonic deque earns.
+The `r <= n` loop bound (not `< n`) is intentional: `prefix` has length `n+1`, and `r = n` corresponds to a window whose right end is the last element of `nums`, which we must consider. The double-ended manipulation (front consume, back evict) is what the monotonic deque earns. The `>=` in the eviction check (not `>`) enforces a *strictly* increasing prefix sequence in the deque: when two indices tie on prefix value, the earlier one is dominated by the later one and can be evicted immediately.
 </details>
 
 ## References
